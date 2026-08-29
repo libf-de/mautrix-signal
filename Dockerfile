@@ -17,7 +17,12 @@ WORKDIR /build
 # Copy all files needed for Go build, and no Rust files
 COPY *.go go.* *.yaml *.sh ./
 COPY pkg/signalmeow/. pkg/signalmeow/.
-COPY pkg/libsignalgo/* pkg/libsignalgo/
+# Don't use a wildcard here: with a glob, Docker copies the *contents* of matched directories,
+# which flattens pkg/libsignalgo/signalversion/version.go into pkg/libsignalgo/ and makes Go see
+# two packages in one directory (and drags the Rust submodule into this stage).
+COPY pkg/libsignalgo/*.go pkg/libsignalgo/
+COPY pkg/libsignalgo/libsignal-ffi.h pkg/libsignalgo/
+COPY pkg/libsignalgo/signalversion/. pkg/libsignalgo/signalversion/.
 COPY pkg/libsignalgo/resources/. pkg/libsignalgo/resources/.
 COPY pkg/msgconv/. pkg/msgconv/.
 COPY pkg/signalid/. pkg/signalid/.
