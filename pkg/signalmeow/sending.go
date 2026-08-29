@@ -412,7 +412,7 @@ func (cli *Client) SendContactSyncRequest(ctx context.Context) error {
 	}
 
 	cli.LastContactRequestTime = time.Now()
-	_, err := cli.sendContent(ctx, cli.Store.ACIServiceID(), uint64(time.Now().UnixMilli()), WrapSyncMessage(&signalpb.SyncMessage{
+	_, err := cli.sendContentToSelf(ctx, uint64(time.Now().UnixMilli()), WrapSyncMessage(&signalpb.SyncMessage{
 		Content: &signalpb.SyncMessage_Request_{
 			Request: &signalpb.SyncMessage_Request{
 				Type: signalpb.SyncMessage_Request_CONTACTS.Enum(),
@@ -432,7 +432,7 @@ func (cli *Client) SendStorageMasterKeyRequest(ctx context.Context) error {
 		Logger()
 	ctx = log.WithContext(ctx)
 
-	_, err := cli.sendContent(ctx, cli.Store.ACIServiceID(), uint64(time.Now().UnixMilli()), WrapSyncMessage(&signalpb.SyncMessage{
+	_, err := cli.sendContentToSelf(ctx, uint64(time.Now().UnixMilli()), WrapSyncMessage(&signalpb.SyncMessage{
 		Content: &signalpb.SyncMessage_Request_{
 			Request: &signalpb.SyncMessage_Request{
 				Type: signalpb.SyncMessage_Request_KEYS.Enum(),
@@ -587,7 +587,7 @@ func (cli *Client) SendGroupMessage(ctx context.Context, gid types.GroupIdentifi
 		return nil, err
 	}
 	if enableSenderKeySend {
-		return cli.sendToGroupWithSenderKey(ctx, &gidBytes, recipients, ptr.Val(endorsement), content, messageTimestamp, 0)
+		return cli.sendToGroupWithSenderKey(ctx, groupSenderKeyTarget(&gidBytes), recipients, ptr.Val(endorsement), content, messageTimestamp, 0)
 	}
 	return cli.sendToGroup(ctx, recipients, content, messageTimestamp, nil, &gidBytes)
 }
@@ -600,6 +600,7 @@ func (cli *Client) sendToGroup(
 	result *GroupMessageSendResult,
 	groupID *libsignalgo.GroupIdentifier,
 ) (*GroupMessageSendResult, error) {
+	story := isStory(content)
 	if result == nil {
 		result = &GroupMessageSendResult{
 			SuccessfullySentTo: []SuccessfulSendResult{},
@@ -617,7 +618,7 @@ func (cli *Client) sendToGroup(
 		}
 		log := zerolog.Ctx(ctx).With().Stringer("member", recipient).Logger()
 		ctx := log.WithContext(ctx)
-		sentUnidentified, err := cli.sendContent(ctx, recipient, messageTimestamp, content, 0, true, groupID, nil)
+		sentUnidentified, err := cli.sendContent(ctx, recipient, messageTimestamp, content, 0, true, groupID, nil, story)
 		if err != nil {
 			result.FailedToSendTo = append(result.FailedToSendTo, FailedSendResult{
 				Recipient: recipient,
@@ -633,7 +634,9 @@ func (cli *Client) sendToGroup(
 		}
 	}
 
-	cli.sendGroupSyncCopy(ctx, content, messageTimestamp, result, groupID)
+	if !story {
+		cli.sendGroupSyncCopy(ctx, content, messageTimestamp, result, groupID)
+	}
 
 	if len(result.FailedToSendTo) == 0 && len(result.SuccessfullySentTo) == 0 {
 		return result, nil // I only sent to myself
@@ -661,7 +664,7 @@ func (cli *Client) sendGroupSyncCopy(
 		syncContent = syncMessageFromGroupEditMessage(content.EditMessage, result.SuccessfullySentTo)
 	}
 	if syncContent != nil {
-		_, selfSendErr := cli.sendContent(ctx, cli.Store.ACIServiceID(), messageTimestamp, syncContent, 0, true, groupID, nil)
+		_, selfSendErr := cli.sendContent(ctx, cli.Store.ACIServiceID(), messageTimestamp, syncContent, 0, true, groupID, nil, false)
 		if selfSendErr != nil {
 			zerolog.Ctx(ctx).Err(selfSendErr).Msg("Failed to send sync message to myself")
 		}
@@ -681,7 +684,7 @@ func (cli *Client) sendSyncCopy(ctx context.Context, rawContent *signalpb.Conten
 		syncContent = rawContent
 	}
 	if syncContent != nil {
-		_, selfSendErr := cli.sendContent(ctx, cli.Store.ACIServiceID(), messageTS, syncContent, 0, true, nil, nil)
+		_, selfSendErr := cli.sendContent(ctx, cli.Store.ACIServiceID(), messageTS, syncContent, 0, true, nil, nil, false)
 		if selfSendErr != nil {
 			zerolog.Ctx(ctx).Err(selfSendErr).Msg("Failed to send sync message to myself")
 		} else {
@@ -785,7 +788,7 @@ func (cli *Client) SendMessage(ctx context.Context, recipientID libsignalgo.Serv
 
 	cli.addSendCache(recipientID, "", messageTimestamp, content)
 	// Send to the recipient
-	sentUnidentified, err := cli.sendContent(ctx, recipientID, messageTimestamp, content, 0, true, nil, nil)
+	sentUnidentified, err := cli.sendContent(ctx, recipientID, messageTimestamp, content, 0, true, nil, nil, isStory(content))
 	if err != nil {
 		return SendMessageResult{
 			WasSuccessful: false,
@@ -833,15 +836,27 @@ func isSyncMessageUrgent(content *signalpb.SyncMessage) bool {
 	}
 }
 
+// isStory reports whether a content should be sent with the story=true query parameter.
+// That covers actual story posts as well as story replies and reactions, which are normal data
+// messages carrying a storyContext.
+func isStory(rawContent *signalpb.Content) bool {
+	if rawContent.GetStoryMessage() != nil {
+		return true
+	}
+	return rawContent.GetDataMessage().GetStoryContext() != nil
+}
+
 func isUrgent(rawContent *signalpb.Content) bool {
 	switch content := rawContent.Content.(type) {
 	case *signalpb.Content_SyncMessage:
 		return isSyncMessageUrgent(content.SyncMessage)
 	case *signalpb.Content_DataMessage,
 		*signalpb.Content_EditMessage,
-		*signalpb.Content_CallMessage,
-		*signalpb.Content_StoryMessage:
+		*signalpb.Content_CallMessage:
 		return true
+	case *signalpb.Content_StoryMessage:
+		// Stories don't warrant a push notification (Signal sends them with urgent=false).
+		return false
 	default:
 		return false
 	}
@@ -851,11 +866,41 @@ func getContentHint(rawContent *signalpb.Content) libsignalgo.UnidentifiedSender
 	switch rawContent.Content.(type) {
 	case *signalpb.Content_DataMessage, *signalpb.Content_EditMessage:
 		return libsignalgo.UnidentifiedSenderMessageContentHintResendable
-	case *signalpb.Content_TypingMessage, *signalpb.Content_ReceiptMessage:
+	case *signalpb.Content_TypingMessage, *signalpb.Content_ReceiptMessage, *signalpb.Content_StoryMessage:
+		// Stories use the implicit hint upstream: they expire, so there's no point in the
+		// recipient asking for a resend after a decryption failure.
 		return libsignalgo.UnidentifiedSenderMessageContentHintImplicit
 	default:
 		return libsignalgo.UnidentifiedSenderMessageContentHintDefault
 	}
+}
+
+// sendContentNoStory is sendContent for content that is never part of a story
+// (sync messages, retry receipts, sender key distribution for groups).
+func (cli *Client) sendContentNoStory(
+	ctx context.Context,
+	recipient libsignalgo.ServiceID,
+	messageTimestamp uint64,
+	content *signalpb.Content,
+	retryCount int,
+	useUnidentifiedSender bool,
+	groupID *libsignalgo.GroupIdentifier,
+	ctmOverride *libsignalgo.CiphertextMessage,
+) (bool, error) {
+	return cli.sendContent(ctx, recipient, messageTimestamp, content, retryCount, useUnidentifiedSender, groupID, ctmOverride, false)
+}
+
+// sendContentToSelf sends content to the user's own other devices. These are never story sends.
+func (cli *Client) sendContentToSelf(
+	ctx context.Context,
+	messageTimestamp uint64,
+	content *signalpb.Content,
+	retryCount int,
+	useUnidentifiedSender bool,
+	groupID *libsignalgo.GroupIdentifier,
+	ctmOverride *libsignalgo.CiphertextMessage,
+) (bool, error) {
+	return cli.sendContent(ctx, cli.Store.ACIServiceID(), messageTimestamp, content, retryCount, useUnidentifiedSender, groupID, ctmOverride, false)
 }
 
 func (cli *Client) sendContent(
@@ -867,6 +912,7 @@ func (cli *Client) sendContent(
 	useUnidentifiedSender bool,
 	groupID *libsignalgo.GroupIdentifier,
 	ctmOverride *libsignalgo.CiphertextMessage,
+	story bool,
 ) (sentUnidentified bool, err error) {
 	log := zerolog.Ctx(ctx).With().
 		Str("action", "send content").
@@ -904,14 +950,27 @@ func (cli *Client) sendContent(
 	var accessKey *libsignalgo.AccessKey
 	if useUnidentifiedSender {
 		profileKey, err := cli.ProfileKeyForSignalID(ctx, recipient.UUID)
-		if err != nil {
+		if err != nil && !story {
 			return false, fmt.Errorf("failed to get profile key: %w", err)
+		} else if err != nil {
+			log.Warn().Err(err).Msg("Failed to get profile key for story recipient, using zero access key")
+			accessKey = &libsignalgo.AccessKey{}
 		} else if profileKey == nil {
-			log.Warn().Msg("Profile key not found")
-			useUnidentifiedSender = false
+			if story {
+				// The server doesn't check access keys for story sends, so a zero key is fine
+				// and lets us send to recipients who haven't shared their profile key.
+				accessKey = &libsignalgo.AccessKey{}
+			} else {
+				log.Warn().Msg("Profile key not found")
+				useUnidentifiedSender = false
+			}
 		} else if accessKey, err = profileKey.DeriveAccessKey(); err != nil {
 			log.Err(err).Msg("Error deriving access key")
-			useUnidentifiedSender = false
+			if story {
+				accessKey = &libsignalgo.AccessKey{}
+			} else {
+				useUnidentifiedSender = false
+			}
 		}
 	}
 	if !useUnidentifiedSender && content.SenderKeyDistributionMessage != nil {
@@ -939,7 +998,7 @@ func (cli *Client) sendContent(
 	if err != nil {
 		return false, err
 	}
-	path := fmt.Sprintf("/v1/messages/%s", recipient)
+	path := fmt.Sprintf("/v1/messages/%s?story=%t", recipient, story)
 
 	var response *signalpb.WebSocketResponseMessage
 	header := http.Header{}
@@ -994,7 +1053,7 @@ func (cli *Client) sendContent(
 			return false, err
 		}
 		// Try to send again (**RECURSIVELY**)
-		sentUnidentified, err = cli.sendContent(ctx, recipient, messageTimestamp, content, retryCount+1, sentUnidentified, groupID, ctmOverride)
+		sentUnidentified, err = cli.sendContent(ctx, recipient, messageTimestamp, content, retryCount+1, sentUnidentified, groupID, ctmOverride, story)
 		if err != nil {
 			log.Err(err).Msg("2nd try sendMessage error")
 			return sentUnidentified, err
@@ -1005,7 +1064,7 @@ func (cli *Client) sendContent(
 		}
 		log.Debug().Msg("Retrying send without sealed sender")
 		// Try to send again (**RECURSIVELY**)
-		sentUnidentified, err = cli.sendContent(ctx, recipient, messageTimestamp, content, retryCount+1, false, groupID, ctmOverride)
+		sentUnidentified, err = cli.sendContent(ctx, recipient, messageTimestamp, content, retryCount+1, false, groupID, ctmOverride, story)
 		if err != nil {
 			log.Err(err).Msg("2nd try sendMessage error")
 			return sentUnidentified, err

@@ -46,6 +46,14 @@ type MessageInfo struct {
 
 	GroupRevision   uint32
 	ServerTimestamp uint64
+
+	// IsStory is set for story messages. The ChatID of a story is always the stories chat,
+	// so StoryGroupID carries the group the story was sent to, if any.
+	IsStory      bool
+	StoryGroupID types.GroupIdentifier
+	// StoryTimestamp is the sent timestamp of the story, taken from the envelope
+	// (StoryMessage has no timestamp field of its own).
+	StoryTimestamp uint64
 }
 
 type ChatEvent struct {

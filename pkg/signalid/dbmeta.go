@@ -31,6 +31,13 @@ type MessageMetadata struct {
 	ContainsAttachments bool              `json:"contains_attachments,omitempty"`
 	MatrixPollOptionIDs []string          `json:"matrix_poll_option_ids,omitempty"`
 	VoteCount           map[string]uint32 `json:"vote_count,omitempty"`
+
+	// Story fields, only set on messages in the stories portal.
+	StoryAuthor        string `json:"story_author,omitempty"`
+	StorySentTimestamp uint64 `json:"story_sent_timestamp,omitempty"`
+	// StoryGroupID is empty for stories sent to a distribution list.
+	StoryGroupID       string `json:"story_group_id,omitempty"`
+	StoryAllowsReplies bool   `json:"story_allows_replies,omitempty"`
 }
 
 type UserLoginMetadata struct {

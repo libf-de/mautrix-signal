@@ -52,6 +52,31 @@ var _ bridgev2.IdentifierValidatingNetwork = (*SignalConnector)(nil)
 
 const PrivateChatTopic = "Signal private chat"
 const NoteToSelfName = "Signal Note to Self"
+const StoriesName = "Signal Stories"
+const StoriesTopic = "Signal stories from your contacts"
+
+func (s *SignalClient) wrapStoriesInfo() *bridgev2.ChatInfo {
+	userLocal := &bridgev2.UserLocalPortalInfo{}
+	if s.Main.Config.MuteStories {
+		userLocal.MutedUntil = ptr.Ptr(event.MutedForever)
+	}
+	if s.Main.Config.StoriesTag != "" {
+		userLocal.Tag = ptr.Ptr(s.Main.Config.StoriesTag)
+	}
+	return &bridgev2.ChatInfo{
+		Name:  ptr.Ptr(StoriesName),
+		Topic: ptr.Ptr(StoriesTopic),
+		Members: &bridgev2.ChatMemberList{
+			IsFull: false,
+			MemberMap: map[networkid.UserID]bridgev2.ChatMember{
+				signalid.MakeUserID(s.Client.Store.ACI): {EventSender: s.makeEventSender(s.Client.Store.ACI)},
+			},
+		},
+		Type:        ptr.Ptr(database.RoomTypeDefault),
+		UserLocal:   userLocal,
+		CanBackfill: false,
+	}
+}
 
 func (s *SignalClient) GetUserInfoWithRefreshAfter(ctx context.Context, ghost *bridgev2.Ghost, refreshAfter time.Duration) (*bridgev2.UserInfo, error) {
 	userID, err := signalid.ParseUserIDAsServiceID(ghost.ID)
@@ -83,6 +108,9 @@ func (s *SignalClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 }
 
 func (s *SignalClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	if signalid.IsStoriesPortal(portal.ID) {
+		return s.wrapStoriesInfo(), nil
+	}
 	userID, groupID, err := signalid.ParsePortalID(portal.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse portal id: %w", err)

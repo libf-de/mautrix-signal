@@ -64,9 +64,44 @@ func (cli *Client) ResetSenderKey(ctx context.Context, groupID types.GroupIdenti
 	return info.DistributionID, nil
 }
 
+// senderKeyTarget describes what a sender key send is scoped to. Groups are the usual case, but
+// Signal also uses sender keys to send stories to a distribution list, which has no group ID.
+// This mirrors Signal Desktop's SenderKeyTargetType (ts/util/distributionListToSendTarget.ts),
+// whose getGroupId() returns undefined for distribution lists.
+type senderKeyTarget struct {
+	// StoreKey is the key the sender key state is stored under. For groups it's the group
+	// identifier; for stories it's storyDistributionListStoreKey(listID).
+	StoreKey types.GroupIdentifier
+	// GroupID is nil for stories.
+	GroupID *libsignalgo.GroupIdentifier
+	// IsStory makes the send use story semantics: no group send endorsements, the zero access key
+	// as a fallback, and story=true on the request.
+	IsStory bool
+}
+
+func groupSenderKeyTarget(groupID *libsignalgo.GroupIdentifier) senderKeyTarget {
+	return senderKeyTarget{
+		StoreKey: types.GroupIdentifier(groupID.String()),
+		GroupID:  groupID,
+	}
+}
+
+// storyDistributionListStoreKey namespaces sender key state for story distribution lists so it
+// can't collide with a group identifier (which is always 44 base64 characters).
+func storyDistributionListStoreKey(listID uuid.UUID) types.GroupIdentifier {
+	return types.GroupIdentifier("storydl:" + listID.String())
+}
+
+func storySenderKeyTarget(listID uuid.UUID) senderKeyTarget {
+	return senderKeyTarget{
+		StoreKey: storyDistributionListStoreKey(listID),
+		IsStory:  true,
+	}
+}
+
 func (cli *Client) sendToGroupWithSenderKey(
 	ctx context.Context,
-	groupID *libsignalgo.GroupIdentifier,
+	target senderKeyTarget,
 	allRecipients []libsignalgo.ServiceID,
 	sec SendEndorsementCache,
 	content *signalpb.Content,
@@ -74,7 +109,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 	retries int,
 ) (*GroupMessageSendResult, error) {
 	if retries >= 3 {
-		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, nil, groupID)
+		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, nil, target.GroupID)
 	}
 	myAddress, err := cli.Store.ACIServiceID().Address(uint(cli.Store.DeviceID))
 	if err != nil {
@@ -97,12 +132,12 @@ func (cli *Client) sendToGroupWithSenderKey(
 		FailedToSendTo:     make([]FailedSendResult, 0),
 	}
 
-	groupIDStr := types.GroupIdentifier(groupID.String())
-	deviceIDs, senderKeyRecipients, fallbackRecipients := cli.getDevicesIDs(ctx, allRecipients, sec, result)
+	groupIDStr := target.StoreKey
+	deviceIDs, senderKeyRecipients, fallbackRecipients := cli.getDevicesIDs(ctx, allRecipients, sec, result, target.IsStory)
 	if len(senderKeyRecipients) == 0 {
 		doUnlock()
 		log.Debug().Msg("No sender key recipients, falling back to normal send")
-		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, result, groupID)
+		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, result, target.GroupID)
 	}
 	ski, err := cli.Store.SenderKeyStore.GetSenderKeyInfo(ctx, groupIDStr)
 	if err != nil {
@@ -153,7 +188,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 			log := log.With().Str("subaction", "skdm").Stringer("recipient_id", recipient).Logger()
 			_, err = cli.sendContent(log.WithContext(ctx), recipient, messageTimestamp, &signalpb.Content{
 				SenderKeyDistributionMessage: skdmBytes,
-			}, 0, true, groupID, nil)
+			}, 0, true, target.GroupID, nil, target.IsStory)
 			if errors.Is(err, ErrDevicesChanged) || errors.Is(err, ErrUnregisteredUser) {
 				log.Warn().Err(err).Msg("Failed to send sender key distribution message due to device changes, will retry")
 				needsRetry = true
@@ -175,10 +210,10 @@ func (cli *Client) sendToGroupWithSenderKey(
 		}
 		if needsRetry {
 			doUnlock()
-			return cli.sendToGroupWithSenderKey(ctx, groupID, allRecipients, sec, content, messageTimestamp, retries+1)
+			return cli.sendToGroupWithSenderKey(ctx, target, allRecipients, sec, content, messageTimestamp, retries+1)
 		}
 	}
-	ssCiphertext, err := cli.encryptWithSenderKey(ctx, groupID, ski.DistributionID, myAddress, senderKeyRecipients, content)
+	ssCiphertext, err := cli.encryptWithSenderKey(ctx, target.GroupID, ski.DistributionID, myAddress, senderKeyRecipients, content)
 	if err != nil {
 		if errors.Is(err, libsignalgo.ErrorCodeSessionNotFound) {
 			log.Warn().Err(err).Msg("Got session not found error for group send from libsignal, resetting session and retrying")
@@ -186,7 +221,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 				return nil, fmt.Errorf("failed to delete sender key info: %w", err)
 			}
 			doUnlock()
-			return cli.sendToGroupWithSenderKey(ctx, groupID, allRecipients, sec, content, messageTimestamp, retries+1)
+			return cli.sendToGroupWithSenderKey(ctx, target, allRecipients, sec, content, messageTimestamp, retries+1)
 		}
 		return nil, err
 	}
@@ -195,7 +230,14 @@ func (cli *Client) sendToGroupWithSenderKey(
 	}
 	header := http.Header{}
 	header.Set("Content-Type", string(web.ContentTypeMultiRecipientMessage))
-	if sec.SendEndorsement != nil {
+	if target.IsStory {
+		// Stories have no group send endorsements. The server doesn't verify access keys for
+		// story sends, so recipients without a known profile key contribute a zero key.
+		if xak == nil {
+			xak = &libsignalgo.AccessKey{}
+		}
+		header.Set("Unidentified-Access-Key", xak.String())
+	} else if sec.SendEndorsement != nil {
 		wantedEndorsements := make([]libsignalgo.GroupSendEndorsement, 0, len(deviceIDs))
 		for serviceID := range deviceIDs {
 			endorsement, ok := sec.MemberEndorsements[serviceID]
@@ -217,8 +259,8 @@ func (cli *Client) sendToGroupWithSenderKey(
 		header.Set("Unidentified-Access-Key", xak.String())
 	}
 	path := fmt.Sprintf(
-		"/v1/messages/multi_recipient?ts=%d&urgent=%t&online=false",
-		messageTimestamp, isUrgent(content),
+		"/v1/messages/multi_recipient?ts=%d&urgent=%t&online=false&story=%t",
+		messageTimestamp, isUrgent(content), target.IsStory,
 	)
 	log.Debug().
 		Any("recipients", ski.SharedWith).
@@ -256,13 +298,13 @@ func (cli *Client) sendToGroupWithSenderKey(
 		}
 		doUnlock()
 		// Send with fallback for any recipients that couldn't do sender key, plus our own sync copy
-		return cli.sendToGroup(ctx, fallbackRecipients, content, messageTimestamp, result, groupID)
+		return cli.sendToGroup(ctx, fallbackRecipients, content, messageTimestamp, result, target.GroupID)
 	case 401, 404:
 		log.Warn().Uint32("status_code", resp.GetStatus()).
 			Msg("Multi-recipient send failed, falling back to normal send")
 		doUnlock()
 		// Fall back to normal send for all recipients
-		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, nil, groupID)
+		return cli.sendToGroup(ctx, allRecipients, content, messageTimestamp, nil, target.GroupID)
 	case 409, 410:
 		log.Warn().Uint32("status_code", resp.GetStatus()).
 			Msg("Multi-recipient send failed due to outdated device list, refreshing and retrying")
@@ -272,7 +314,7 @@ func (cli *Client) sendToGroupWithSenderKey(
 		}
 		doUnlock()
 		// Retry recursively after fixing device lists
-		return cli.sendToGroupWithSenderKey(ctx, groupID, allRecipients, sec, content, messageTimestamp, retries+1)
+		return cli.sendToGroupWithSenderKey(ctx, target, allRecipients, sec, content, messageTimestamp, retries+1)
 	default:
 		return nil, fmt.Errorf("unexpected status code %d in multi-recipient send", resp.GetStatus())
 	}
@@ -364,6 +406,7 @@ func (cli *Client) getDevicesIDs(
 	recipients []libsignalgo.ServiceID,
 	sendEndorsement SendEndorsementCache,
 	result *GroupMessageSendResult,
+	isStory bool,
 ) (
 	map[libsignalgo.ServiceID]senderKeySendMeta,
 	[]store.SessionAddressTuple,
@@ -382,22 +425,38 @@ func (cli *Client) getDevicesIDs(
 		if recipient.Type != libsignalgo.ServiceIDTypeACI {
 			continue
 		}
-		_, hasEndorsement := sendEndorsement.MemberEndorsements[recipient]
-		if !hasEndorsement {
-			continue
+		if !isStory {
+			// Groups gate sender key eligibility on having an endorsement for the recipient.
+			// Stories have no endorsements and are gated on the access key instead, matching
+			// isValidSenderKeyRecipient in Signal Desktop.
+			_, hasEndorsement := sendEndorsement.MemberEndorsements[recipient]
+			if !hasEndorsement {
+				continue
+			}
 		}
+		var accessKey *libsignalgo.AccessKey
 		profileKey, err := cli.Store.RecipientStore.LoadProfileKey(ctx, recipient.UUID)
 		if err != nil {
 			log.Err(err).Stringer("recipient_id", recipient.UUID).Msg("Failed to get profile key")
-			continue
+			if !isStory {
+				continue
+			}
 		} else if profileKey == nil {
 			log.Debug().Stringer("recipient_id", recipient.UUID).Msg("No profile key for recipient")
-			continue
-		}
-		accessKey, err := profileKey.DeriveAccessKey()
-		if err != nil {
+			if !isStory {
+				continue
+			}
+		} else if accessKey, err = profileKey.DeriveAccessKey(); err != nil {
 			log.Err(err).Stringer("recipient_id", recipient.UUID).Msg("Failed to derive access key")
-			continue
+			accessKey = nil
+			if !isStory {
+				continue
+			}
+		}
+		if accessKey == nil {
+			// Story sends aren't access-key checked by the server, so a zero key works.
+			// This matches getAccessKey(..., {story}) returning ZERO_ACCESS_KEY upstream.
+			accessKey = &libsignalgo.AccessKey{}
 		}
 		sessions, err := cli.Store.ACISessionStore.AllSessionsForServiceID(ctx, recipient)
 		if err == nil && len(sessions) == 0 {

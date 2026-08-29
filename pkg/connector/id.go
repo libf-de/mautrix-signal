@@ -36,6 +36,13 @@ func (s *SignalClient) makePortalKey(chatID string) networkid.PortalKey {
 	return key
 }
 
+func (s *SignalClient) makeStoriesPortalKey() networkid.PortalKey {
+	return networkid.PortalKey{
+		ID:       signalid.StoriesPortalID,
+		Receiver: s.UserLogin.ID,
+	}
+}
+
 func (s *SignalClient) makeDMPortalKey(serviceID libsignalgo.ServiceID) networkid.PortalKey {
 	return networkid.PortalKey{
 		ID:       signalid.MakeDMPortalID(serviceID),

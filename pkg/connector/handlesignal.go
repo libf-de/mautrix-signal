@@ -37,6 +37,7 @@ import (
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
+	"go.mau.fi/mautrix-signal/pkg/msgconv"
 	"go.mau.fi/mautrix-signal/pkg/signalid"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/events"
@@ -47,7 +48,12 @@ import (
 func (s *SignalClient) handleSignalEvent(rawEvt events.SignalEvent) bool {
 	switch evt := rawEvt.(type) {
 	case *events.ChatEvent:
-		return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, &Bv2ChatEvent{ChatEvent: evt, s: s}).Success
+		wrapped := &Bv2ChatEvent{ChatEvent: evt, s: s}
+		if !s.Main.Config.EnableStories && (evt.Info.IsStory || wrapped.isStoryReaction()) {
+			s.UserLogin.Log.Debug().Msg("Ignoring story event, stories are disabled")
+			return true
+		}
+		return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, wrapped).Success
 	case *events.DecryptionError:
 		return s.Main.Bridge.QueueRemoteEvent(s.UserLogin, s.wrapDecryptionError(evt)).Success
 	case *events.Receipt:
@@ -194,8 +200,18 @@ func (evt *Bv2ChatEvent) GetType() bridgev2.RemoteEventType {
 		return bridgev2.RemoteEventEdit
 	case *signalpb.TypingMessage:
 		return bridgev2.RemoteEventTyping
+	case *signalpb.StoryMessage:
+		return bridgev2.RemoteEventMessage
 	}
 	return bridgev2.RemoteEventUnknown
+}
+
+// isStoryReaction reports whether this event is a reaction to a story. Story reactions arrive in
+// the DM/group with the story's author and timestamp in storyContext, but the story itself lives in
+// the stories portal, so they have to be rerouted there to find their target.
+func (evt *Bv2ChatEvent) isStoryReaction() bool {
+	dm, ok := evt.Event.(*signalpb.DataMessage)
+	return ok && dm.Reaction != nil && dm.StoryContext != nil
 }
 
 func (evt *Bv2ChatEvent) GetChatInfoChange(ctx context.Context) (*bridgev2.ChatInfoChange, error) {
@@ -215,6 +231,9 @@ func (evt *Bv2ChatEvent) GetChatInfoChange(ctx context.Context) (*bridgev2.ChatI
 func (evt *Bv2ChatEvent) PreHandle(ctx context.Context, portal *bridgev2.Portal) {
 	dataMsg, ok := evt.Event.(*signalpb.DataMessage)
 	if !ok || dataMsg.GroupV2 == nil {
+		return
+	} else if evt.isStoryReaction() {
+		// Story reactions are rerouted to the stories portal, which has no group revision.
 		return
 	}
 	portalRev := portal.Metadata.(*signalid.PortalMetadata).Revision
@@ -236,6 +255,9 @@ func (evt *Bv2ChatEvent) GetTimeout() time.Duration {
 }
 
 func (evt *Bv2ChatEvent) GetPortalKey() networkid.PortalKey {
+	if evt.Info.IsStory || evt.isStoryReaction() {
+		return evt.s.makeStoriesPortalKey()
+	}
 	return evt.s.makePortalKey(evt.Info.ChatID)
 }
 
@@ -258,6 +280,11 @@ func (evt *Bv2ChatEvent) AddLogContext(c zerolog.Context) zerolog.Context {
 		c = c.
 			Uint64("edit_target_ts", innerEvt.GetTargetSentTimestamp()).
 			Uint64("edit_ts", innerEvt.GetDataMessage().GetTimestamp())
+	case *signalpb.StoryMessage:
+		c = c.Bool("is_story", true).Uint64("story_ts", evt.Info.StoryTimestamp)
+		if evt.Info.StoryGroupID != "" {
+			c = c.Str("story_group_id", string(evt.Info.StoryGroupID))
+		}
 	}
 	return c
 }
@@ -280,6 +307,8 @@ func (evt *Bv2ChatEvent) getDataMsgTimestamp() uint64 {
 		return innerEvt.GetTimestamp()
 	case *signalpb.EditMessage:
 		return innerEvt.GetDataMessage().GetTimestamp()
+	case *signalpb.StoryMessage:
+		return evt.Info.StoryTimestamp
 	default:
 		return 0
 	}
@@ -336,6 +365,9 @@ func (evt *Bv2ChatEvent) GetRemovedEmojiID() networkid.EmojiID {
 }
 
 func (evt *Bv2ChatEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
+	if storyMsg, ok := evt.Event.(*signalpb.StoryMessage); ok {
+		return evt.convertStory(ctx, portal, intent, storyMsg), nil
+	}
 	dataMsg, ok := evt.Event.(*signalpb.DataMessage)
 	if !ok {
 		return nil, fmt.Errorf("ConvertMessage() called for non-DataMessage event")
@@ -357,6 +389,30 @@ func (evt *Bv2ChatEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Po
 		}
 	}
 	return converted, nil
+}
+
+func (evt *Bv2ChatEvent) convertStory(
+	ctx context.Context,
+	portal *bridgev2.Portal,
+	intent bridgev2.MatrixAPI,
+	storyMsg *signalpb.StoryMessage,
+) *bridgev2.ConvertedMessage {
+	info := msgconv.StoryInfo{
+		Timestamp: evt.Info.StoryTimestamp,
+		GroupID:   string(evt.Info.StoryGroupID),
+	}
+	if evt.Info.StoryGroupID != "" {
+		group, _, err := evt.s.Client.RetrieveGroupByID(ctx, evt.Info.StoryGroupID, 0)
+		if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).
+				Str("story_group_id", string(evt.Info.StoryGroupID)).
+				Msg("Failed to get group info for story label")
+			info.GroupName = "Unknown group"
+		} else {
+			info.GroupName = group.Title
+		}
+	}
+	return evt.s.Main.MsgConv.StoryToMatrix(ctx, evt.s.Client, portal, evt.Info.Sender, intent, storyMsg, info)
 }
 
 const editStubPartID networkid.PartID = "editstub"

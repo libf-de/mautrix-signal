@@ -64,7 +64,7 @@ func (cli *Client) sendRetryRequest(ctx context.Context, result DecryptionResult
 	if err != nil {
 		return fmt.Errorf("failed to create ciphertext message from plaintext content: %w", err)
 	}
-	_, err = cli.sendContent(ctx, serviceID, uint64(time.Now().UnixMilli()), &signalpb.Content{
+	_, err = cli.sendContentNoStory(ctx, serviceID, uint64(time.Now().UnixMilli()), &signalpb.Content{
 		Content: &signalpb.Content_DecryptionErrorMessage{
 			DecryptionErrorMessage: demBytes,
 		},
@@ -206,7 +206,7 @@ func (cli *Client) handleRetryRequest(
 		Bool("found_message_in_cache", cacheHit).
 		Bool("including_skdm", skdmBytes != nil).
 		Msg("Responding to decryption error message")
-	_, err = cli.sendContent(ctx, serviceID, responseTimestamp, retryContent, 0, true, result.GroupID, nil)
+	_, err = cli.sendContent(ctx, serviceID, responseTimestamp, retryContent, 0, true, result.GroupID, nil, isStory(retryContent))
 	if err != nil {
 		return fmt.Errorf("failed to send response: %w", err)
 	}

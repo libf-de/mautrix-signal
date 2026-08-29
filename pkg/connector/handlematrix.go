@@ -113,6 +113,9 @@ func getTimestampForEvent(txnID networkid.RawTransactionID, evt *event.Event, or
 }
 
 func (s *SignalClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (message *bridgev2.MatrixMessageResponse, err error) {
+	if signalid.IsStoriesPortal(msg.Portal.ID) {
+		return s.handleMatrixStoriesMessage(ctx, msg)
+	}
 	converted, err := s.Main.MsgConv.ToSignal(
 		ctx, s.Client, msg.Portal, msg.Event, msg.Content, msg.OrigSender != nil, msg.ReplyTo,
 	)
@@ -236,6 +239,13 @@ func (s *SignalClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 		return nil, fmt.Errorf("failed to parse target message ID: %w", err)
 	}
 	ts := getTimestampForEvent(msg.InputTransactionID, msg.Event, msg.OrigSender)
+	if signalid.IsStoriesPortal(msg.Portal.ID) {
+		err = s.sendStoryReaction(ctx, msg.TargetMessage, msg.PreHandleResp.Emoji, false, ts)
+		if err != nil {
+			return nil, err
+		}
+		return &database.Reaction{}, nil
+	}
 	err = s.sendMessage(ctx, msg.Portal.ID, signalmeow.WrapDataMessage(&signalpb.DataMessage{
 		Timestamp:               proto.Uint64(ts),
 		RequiredProtocolVersion: proto.Uint32(uint32(signalpb.DataMessage_REACTIONS)),
@@ -258,6 +268,13 @@ func (s *SignalClient) HandleMatrixReactionRemove(ctx context.Context, msg *brid
 		return fmt.Errorf("failed to parse target message ID: %w", err)
 	}
 	ts := getTimestampForEvent(msg.InputTransactionID, msg.Event, msg.OrigSender)
+	if signalid.IsStoriesPortal(msg.Portal.ID) {
+		target, err := s.Main.Bridge.DB.Message.GetPartByID(ctx, s.UserLogin.ID, msg.TargetReaction.MessageID, "")
+		if err != nil {
+			return fmt.Errorf("failed to get story for reaction removal: %w", err)
+		}
+		return s.sendStoryReaction(ctx, target, msg.TargetReaction.Emoji, true, ts)
+	}
 	err = s.sendMessage(ctx, msg.Portal.ID, signalmeow.WrapDataMessage(&signalpb.DataMessage{
 		Timestamp:               proto.Uint64(ts),
 		RequiredProtocolVersion: proto.Uint32(uint32(signalpb.DataMessage_REACTIONS)),
@@ -295,6 +312,11 @@ func (s *SignalClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridg
 }
 
 func (s *SignalClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev2.MatrixReadReceipt) error {
+	if signalid.IsStoriesPortal(receipt.Portal.ID) {
+		// Signal marks stories as seen with viewed receipts, not read receipts, and sending a read
+		// receipt for a story timestamp would be wrong. Viewed receipts aren't implemented yet.
+		return nil
+	}
 	if !receipt.ReadUpTo.After(receipt.LastRead) {
 		return nil
 	}

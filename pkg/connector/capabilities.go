@@ -28,6 +28,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+
+	"go.mau.fi/mautrix-signal/pkg/signalid"
 )
 
 func supportedIfFFmpeg() event.CapabilitySupportLevel {
@@ -38,7 +40,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_07_22"
+	base := "fi.mau.signal.capabilities.2026_08_29"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -192,6 +194,7 @@ var signalDisappearingCap = &event.DisappearingTimerCapability{
 
 var signalCapsNoteToSelf *event.RoomFeatures
 var signalCapsDM *event.RoomFeatures
+var signalCapsStories *event.RoomFeatures
 
 func init() {
 	signalCapsDM = ptr.Clone(signalCaps)
@@ -204,10 +207,32 @@ func init() {
 	signalCapsNoteToSelf.EditMaxAge = nil
 	signalCapsNoteToSelf.DeleteMaxAge = nil
 	signalCapsNoteToSelf.ID = capID() + "+note_to_self"
+
+	signalCapsStories = ptr.Clone(signalCaps)
+	signalCapsStories.ID = capID() + "+stories"
+	signalCapsStories.MemberActions = nil
+	signalCapsStories.State = nil
+	signalCapsStories.Edit = event.CapLevelUnsupported
+	signalCapsStories.EditMaxCount = 0
+	signalCapsStories.EditMaxAge = nil
+	signalCapsStories.Delete = event.CapLevelUnsupported
+	signalCapsStories.DeleteMaxAge = nil
+	signalCapsStories.DisappearingTimer = nil
+	signalCapsStories.TypingNotifications = false
+	signalCapsStories.ReadReceipts = false
+	signalCapsStories.DeleteChat = false
+	signalCapsStories.MessageRequest = nil
+	signalCapsStories.Poll = event.CapLevelUnsupported
+	signalCapsStories.PollEnd = event.CapLevelUnsupported
+	signalCapsStories.PollMaxOptions = 0
+	signalCapsStories.PollOptionMaxLength = 0
+	signalCapsStories.LocationMessage = event.CapLevelUnsupported
 }
 
 func (s *SignalClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	if portal.Receiver == s.UserLogin.ID && portal.ID == networkid.PortalID(s.UserLogin.ID) {
+	if signalid.IsStoriesPortal(portal.ID) {
+		return signalCapsStories
+	} else if portal.Receiver == s.UserLogin.ID && portal.ID == networkid.PortalID(s.UserLogin.ID) {
 		return signalCapsNoteToSelf
 	} else if portal.RoomType == database.RoomTypeDM {
 		return signalCapsDM
@@ -245,5 +270,5 @@ func (s *SignalConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities
 }
 
 func (s *SignalConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 11
+	return 1, 12
 }

@@ -24,6 +24,7 @@ import (
 	up "go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
 
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
@@ -43,6 +44,10 @@ type SignalConfig struct {
 	LocationFormat        string              `yaml:"location_format"`
 	DisappearViewOnce     bool                `yaml:"disappear_view_once"`
 	ExtEvPolls            bool                `yaml:"extev_polls"`
+	EnableStories         bool                `yaml:"enable_stories"`
+	DisableStorySend      bool                `yaml:"disable_story_send"`
+	MuteStories           bool                `yaml:"mute_stories"`
+	StoriesTag            event.RoomTag       `yaml:"stories_tag"`
 
 	displaynameTemplate *template.Template `yaml:"-"`
 }
@@ -105,6 +110,10 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "location_format")
 	helper.Copy(up.Bool, "disappear_view_once")
 	helper.Copy(up.Bool, "extev_polls")
+	helper.Copy(up.Bool, "enable_stories")
+	helper.Copy(up.Bool, "disable_story_send")
+	helper.Copy(up.Bool, "mute_stories")
+	helper.Copy(up.Str, "stories_tag")
 }
 
 func (s *SignalConnector) GetConfig() (string, any, up.Upgrader) {

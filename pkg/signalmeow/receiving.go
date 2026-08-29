@@ -671,7 +671,9 @@ func (cli *Client) handleDecryptedResult(
 	case *signalpb.Content_NullMessage:
 		// This is intentionally ignored
 	case *signalpb.Content_StoryMessage:
-		// This is also ignored for now
+		handlerSuccess = cli.incomingStoryMessage(
+			ctx, content.StoryMessage, theirServiceID.UUID, envelope, isBlocked, false,
+		)
 	default:
 		if rawContent.PniSignatureMessage == nil && rawContent.SenderKeyDistributionMessage == nil {
 			log.Warn().Type("content_type", content).Msg("Unrecognized message content type")
@@ -736,6 +738,10 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 		}
 	case *signalpb.SyncMessage_Sent_:
 		syncSent := content.Sent
+		if syncSent.GetStoryMessage() != nil {
+			// Story we posted from another device.
+			cli.incomingStoryMessage(ctx, syncSent.GetStoryMessage(), cli.Store.ACI, envelope, false, true)
+		}
 		if syncSent.GetMessage() != nil || syncSent.GetEditMessage() != nil {
 			syncDestinationServiceID, err := ParseStringOrBinaryServiceID(syncSent.GetDestinationServiceId(), syncSent.GetDestinationServiceIdBinary())
 			if err != nil && !errors.Is(err, ErrEmptyUUIDInput) {
@@ -958,6 +964,60 @@ func (cli *Client) incomingEditMessage(
 		},
 		Event: editMessage,
 	}), true
+}
+
+func (cli *Client) incomingStoryMessage(
+	ctx context.Context,
+	storyMessage *signalpb.StoryMessage,
+	messageSenderACI uuid.UUID,
+	envelope *signalpb.Envelope,
+	isBlocked bool,
+	isSync bool,
+) (handlerSuccess bool) {
+	log := zerolog.Ctx(ctx)
+	if !isSync && !envelope.GetStory() {
+		// Signal Desktop treats this as malformed but still processes it, so just warn.
+		log.Warn().Msg("Received story message with story=false on the envelope")
+	}
+
+	// Story senders often aren't contacts, so without this the ghost has no name or avatar.
+	if storyMessage.ProfileKey != nil {
+		profileKey := libsignalgo.ProfileKey(storyMessage.ProfileKey)
+		err := cli.Store.RecipientStore.StoreProfileKey(ctx, messageSenderACI, profileKey)
+		if err != nil {
+			log.Err(err).Msg("Failed to store profile key from story message")
+		}
+	}
+
+	var groupID types.GroupIdentifier
+	if storyMessage.GetGroup() != nil {
+		groupMasterKeyBytes := storyMessage.GetGroup().GetMasterKey()
+		masterKey := masterKeyFromBytes(libsignalgo.GroupMasterKey(groupMasterKeyBytes))
+		var err error
+		groupID, err = cli.StoreMasterKey(ctx, masterKey)
+		if err != nil {
+			log.Err(err).Msg("StoreMasterKey error for story message")
+			return false
+		}
+	} else if isBlocked {
+		log.Debug().Msg("Dropping story from blocked user")
+		return true
+	}
+
+	// StoryMessage has no timestamp of its own; the envelope timestamp is the sent timestamp.
+	storyTimestamp := envelope.GetClientTimestamp()
+
+	return cli.handleEvent(&events.ChatEvent{
+		Info: events.MessageInfo{
+			Sender:          messageSenderACI,
+			ChatID:          types.StoriesChatID,
+			ServerTimestamp: envelope.GetServerTimestamp(),
+			IsStory:         true,
+			StoryGroupID:    groupID,
+			StoryTimestamp:  storyTimestamp,
+		},
+		Event: storyMessage,
+	})
 }
 
 func (cli *Client) incomingDataMessage(

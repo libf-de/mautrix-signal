@@ -148,7 +148,22 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 				return fmt.Errorf("failed to save device after receiving account record: %w", err)
 			}
 			log.Debug().Msg("Saved device after receiving account record")
-		case *signalpb.StorageRecord_GroupV1, *signalpb.StorageRecord_StoryDistributionList:
+		case *signalpb.StorageRecord_StoryDistributionList:
+			list, err := storyDistributionListFromRecord(data.StoryDistributionList)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to parse story distribution list record")
+				continue
+			}
+			err = cli.Store.StoryStore.PutStoryDistributionList(ctx, list)
+			if err != nil {
+				return fmt.Errorf("failed to store story distribution list %s: %w", list.ID, err)
+			}
+			log.Debug().
+				Stringer("distribution_id", list.ID).
+				Int("recipient_count", len(list.Recipients)).
+				Bool("is_block_list", list.IsBlockList).
+				Msg("Stored story distribution list from storage service")
+		case *signalpb.StorageRecord_GroupV1:
 			// irrelevant data
 		default:
 			log.Warn().Type("type", data).Str("item_id", record.StorageID).Msg("Unknown storage record type")

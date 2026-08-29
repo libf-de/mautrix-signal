@@ -17,6 +17,7 @@
 package signalid
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -77,8 +78,22 @@ func ParseUserIDAsServiceID(userID networkid.UserID) (libsignalgo.ServiceID, err
 	return libsignalgo.ServiceIDFromString(userIDStr)
 }
 
+// StoriesPortalID is the portal ID of the per-login room that collects every Signal story.
+const StoriesPortalID = networkid.PortalID(types.StoriesChatID)
+
+// ErrStoriesPortal is returned by ParsePortalID for the stories portal. Callers that don't
+// explicitly support stories will propagate this error, which is the desired behavior: the stories
+// room has no Signal-side chat to rename, invite to, set a timer on, backfill or delete.
+var ErrStoriesPortal = errors.New("portal is the stories portal")
+
+func IsStoriesPortal(portalID networkid.PortalID) bool {
+	return portalID == StoriesPortalID
+}
+
 func ParsePortalID(portalID networkid.PortalID) (userID libsignalgo.ServiceID, groupID types.GroupIdentifier, err error) {
-	if len(portalID) == 44 {
+	if portalID == StoriesPortalID {
+		err = ErrStoriesPortal
+	} else if len(portalID) == 44 {
 		groupID = types.GroupIdentifier(portalID)
 	} else {
 		userID, err = libsignalgo.ServiceIDFromString(string(portalID))

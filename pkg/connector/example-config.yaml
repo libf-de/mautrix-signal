@@ -26,3 +26,12 @@ location_format: 'https://www.google.com/maps/place/%[1]s,%[2]s'
 disappear_view_once: false
 # Should polls be sent using unstable MSC3381 event types?
 extev_polls: false
+# Should Signal stories be bridged into a dedicated "Signal Stories" room?
+enable_stories: false
+# Should sending stories from Matrix be disabled? If false, a non-reply message in the stories room
+# is posted as a story to your "My Story" distribution list.
+disable_story_send: true
+# Should the stories room be muted?
+mute_stories: true
+# Tag to apply to the stories room (e.g. m.lowpriority). Leave empty to not tag it.
+stories_tag: m.lowpriority

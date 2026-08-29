@@ -79,6 +79,7 @@ type Device struct {
 	SenderKeyStore   SenderKeyStore
 
 	GroupStore     GroupStore
+	StoryStore     StoryDistributionListStore
 	RecipientStore RecipientStore
 	DeviceStore    DeviceStore
 	BackupStore    BackupStore

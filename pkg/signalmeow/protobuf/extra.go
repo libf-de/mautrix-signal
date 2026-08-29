@@ -9,3 +9,4 @@ type ChatEventContent interface {
 func (*DataMessage) isChatEventContent()   {}
 func (*TypingMessage) isChatEventContent() {}
 func (*EditMessage) isChatEventContent()   {}
+func (*StoryMessage) isChatEventContent()  {}

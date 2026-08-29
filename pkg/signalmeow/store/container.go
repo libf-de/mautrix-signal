@@ -105,6 +105,7 @@ func (c *Container) scanDevice(row dbutil.Scannable) (*Device, error) {
 	device.IdentityKeyStore = baseStore
 	device.SenderKeyStore = baseStore
 	device.GroupStore = baseStore
+	device.StoryStore = baseStore
 	device.RecipientStore = baseStore
 	device.DeviceStore = baseStore
 	device.BackupStore = baseStore

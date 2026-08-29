@@ -1,3 +1,10 @@
+# unreleased
+
+* Added support for Signal stories. Incoming stories from contacts and groups are bridged into a
+  dedicated "Signal Stories" room, reactions to stories are bridged both ways, and messages sent in
+  the stories room are posted as stories to "My Story". Disabled by default; see the
+  `enable_stories` and `disable_story_send` config options.
+
 # v26.08
 
 * Updated libsignal to v0.100.0
