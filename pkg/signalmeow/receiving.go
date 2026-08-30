@@ -373,6 +373,7 @@ func (cli *Client) incomingAPIMessageHandler(ctx context.Context, req *signalpb.
 		Object("parsed_source_service_id", sourceServiceID).
 		Int32("envelope_type_id", int32(envelope.GetType())).
 		Str("envelope_type", signalpb.Envelope_Type_name[int32(envelope.GetType())]).
+		Bool("story", envelope.GetStory()).
 		Msg("Received envelope")
 
 	result := cli.decryptEnvelope(ctx, envelope, sourceServiceID, destinationServiceID)
@@ -610,6 +611,12 @@ func (cli *Client) handleDecryptedResult(
 
 	var sendDeliveryReceipt bool
 	var deliveryReceiptTS uint64
+	log.Debug().
+		Type("content_type", rawContent.Content).
+		Stringer("sender", theirServiceID).
+		Bool("story_envelope", envelope.GetStory()).
+		Bool("has_skdm", rawContent.SenderKeyDistributionMessage != nil).
+		Msg("Handling decrypted content")
 	switch content := rawContent.Content.(type) {
 	case *signalpb.Content_SyncMessage:
 		if theirServiceID == cli.Store.ACIServiceID() {
