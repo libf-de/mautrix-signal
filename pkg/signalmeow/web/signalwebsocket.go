@@ -283,7 +283,13 @@ func (s *SignalWebsocket) connectLoop(
 		}
 		isFirstConnect = false
 
-		ws, resp, err := OpenWebsocket(ctx, wsURL)
+		var upgradeHeaders http.Header
+		if s.basicAuth != nil {
+			// Only the authenticated socket receives messages, so only it needs to opt into stories.
+			upgradeHeaders = http.Header{}
+			upgradeHeaders.Set(ReceiveStoriesHeader, "true")
+		}
+		ws, resp, err := OpenWebsocket(ctx, wsURL, upgradeHeaders)
 		if resp != nil {
 			if resp.StatusCode != 101 {
 				// Server didn't want to open websocket
@@ -661,13 +667,26 @@ func (s *SignalWebsocket) sendRequestInternal(
 	return response, nil
 }
 
-func OpenWebsocket(ctx context.Context, url string) (*websocket.Conn, *http.Response, error) {
+// ReceiveStoriesHeader must be set to "true" on the authenticated websocket upgrade request to
+// receive stories. If it isn't set, the server silently acknowledges and discards every story
+// envelope, meaning they're deleted server-side and won't be redelivered on reconnect.
+// See WebSocketConnection#sendMessage and WebsocketHeaders in Signal-Server.
+const ReceiveStoriesHeader = "X-Signal-Receive-Stories"
+
+func OpenWebsocket(ctx context.Context, url string, extraHeaders ...http.Header) (*websocket.Conn, *http.Response, error) {
 	opt := &websocket.DialOptions{
 		HTTPClient: SignalHTTPClient,
-		HTTPHeader: make(http.Header, 2),
+		HTTPHeader: make(http.Header, 3),
 	}
 	opt.HTTPHeader.Set("User-Agent", UserAgent)
 	opt.HTTPHeader.Set("X-Signal-Agent", SignalAgent)
+	for _, header := range extraHeaders {
+		for key, values := range header {
+			for _, value := range values {
+				opt.HTTPHeader.Add(key, value)
+			}
+		}
+	}
 	ws, resp, err := websocket.Dial(ctx, url, opt)
 	if ws != nil {
 		ws.SetReadLimit(1 << 20) // Increase read limit to 1MB from default of 32KB
