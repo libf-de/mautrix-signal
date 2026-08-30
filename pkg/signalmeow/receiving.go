@@ -671,8 +671,10 @@ func (cli *Client) handleDecryptedResult(
 	case *signalpb.Content_NullMessage:
 		// This is intentionally ignored
 	case *signalpb.Content_StoryMessage:
+		// StoryMessage has no timestamp of its own; the envelope timestamp is the sent timestamp.
 		handlerSuccess = cli.incomingStoryMessage(
-			ctx, content.StoryMessage, theirServiceID.UUID, envelope, isBlocked, false,
+			ctx, content.StoryMessage, theirServiceID.UUID, envelope,
+			envelope.GetClientTimestamp(), isBlocked, false,
 		)
 	default:
 		if rawContent.PniSignatureMessage == nil && rawContent.SenderKeyDistributionMessage == nil {
@@ -740,7 +742,12 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 		syncSent := content.Sent
 		if syncSent.GetStoryMessage() != nil {
 			// Story we posted from another device.
-			cli.incomingStoryMessage(ctx, syncSent.GetStoryMessage(), cli.Store.ACI, envelope, false, true)
+			// The sync message carries the story's own timestamp; the envelope timestamp is the
+			// timestamp of the sync message itself.
+			cli.incomingStoryMessage(
+				ctx, syncSent.GetStoryMessage(), cli.Store.ACI, envelope,
+				syncSent.GetTimestamp(), false, true,
+			)
 		}
 		if syncSent.GetMessage() != nil || syncSent.GetEditMessage() != nil {
 			syncDestinationServiceID, err := ParseStringOrBinaryServiceID(syncSent.GetDestinationServiceId(), syncSent.GetDestinationServiceIdBinary())
@@ -971,6 +978,7 @@ func (cli *Client) incomingStoryMessage(
 	storyMessage *signalpb.StoryMessage,
 	messageSenderACI uuid.UUID,
 	envelope *signalpb.Envelope,
+	storyTimestamp uint64,
 	isBlocked bool,
 	isSync bool,
 ) (handlerSuccess bool) {
@@ -1004,8 +1012,18 @@ func (cli *Client) incomingStoryMessage(
 		return true
 	}
 
-	// StoryMessage has no timestamp of its own; the envelope timestamp is the sent timestamp.
-	storyTimestamp := envelope.GetClientTimestamp()
+	if storyTimestamp == 0 {
+		// Shouldn't happen, but an empty timestamp would produce an empty message ID.
+		storyTimestamp = envelope.GetServerTimestamp()
+		log.Warn().Msg("Story message has no timestamp, falling back to the server timestamp")
+	}
+
+	log.Debug().
+		Stringer("sender", messageSenderACI).
+		Uint64("story_ts", storyTimestamp).
+		Str("story_group_id", string(groupID)).
+		Bool("is_sync", isSync).
+		Msg("Received story message")
 
 	return cli.handleEvent(&events.ChatEvent{
 		Info: events.MessageInfo{
