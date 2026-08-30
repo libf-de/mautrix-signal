@@ -148,6 +148,13 @@ func (cli *Client) processStorageInTxn(ctx context.Context, update *StorageUpdat
 				return fmt.Errorf("failed to save device after receiving account record: %w", err)
 			}
 			log.Debug().Msg("Saved device after receiving account record")
+			if data.Account.GetStoriesDisabled() {
+				log.Warn().Msg("Stories are disabled on this Signal account, so no stories will be received")
+			} else {
+				log.Debug().
+					Bool("has_set_my_stories_privacy", data.Account.GetHasSetMyStoriesPrivacy()).
+					Msg("Stories are enabled on this Signal account")
+			}
 		case *signalpb.StorageRecord_StoryDistributionList:
 			list, err := storyDistributionListFromRecord(data.StoryDistributionList)
 			if err != nil {
