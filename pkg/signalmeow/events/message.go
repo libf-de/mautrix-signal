@@ -54,6 +54,8 @@ type MessageInfo struct {
 	// StoryTimestamp is the sent timestamp of the story, taken from the envelope
 	// (StoryMessage has no timestamp field of its own).
 	StoryTimestamp uint64
+	// StoryRecipients is only set for our own stories received via sync messages.
+	StoryRecipients []string
 }
 
 type ChatEvent struct {

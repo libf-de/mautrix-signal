@@ -299,6 +299,9 @@ func (s *SignalClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridg
 		return fmt.Errorf("cannot delete other people's messages")
 	}
 	ts := getTimestampForEvent(msg.InputTransactionID, msg.Event, msg.OrigSender)
+	if signalid.IsStoriesPortal(msg.Portal.ID) {
+		return s.deleteStory(ctx, msg.TargetMessage, ts)
+	}
 	err = s.sendMessage(ctx, msg.Portal.ID, signalmeow.WrapDataMessage(&signalpb.DataMessage{
 		Timestamp: proto.Uint64(ts),
 		Delete: &signalpb.DataMessage_Delete{
@@ -312,11 +315,6 @@ func (s *SignalClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridg
 }
 
 func (s *SignalClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev2.MatrixReadReceipt) error {
-	if signalid.IsStoriesPortal(receipt.Portal.ID) {
-		// Signal marks stories as seen with viewed receipts, not read receipts, and sending a read
-		// receipt for a story timestamp would be wrong. Viewed receipts aren't implemented yet.
-		return nil
-	}
 	if !receipt.ReadUpTo.After(receipt.LastRead) {
 		return nil
 	}
@@ -329,6 +327,7 @@ func (s *SignalClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bri
 	} else if len(dbMessages) == 0 {
 		return nil
 	}
+	isStories := signalid.IsStoriesPortal(receipt.Portal.ID)
 	messagesToRead := map[uuid.UUID][]uint64{}
 	for _, msg := range dbMessages {
 		userID, timestamp, err := signalid.ParseMessageID(msg.ID)
@@ -350,8 +349,14 @@ func (s *SignalClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bri
 		}
 		// Don't use portal.sendSignalMessage because we're sending this straight to
 		// who sent the original message, not the portal's ChatID
+		// Stories are marked as seen with viewed receipts rather than read receipts; a read
+		// receipt for a story timestamp would be meaningless and wouldn't add a view.
+		receiptContent := signalmeow.ReadReceptMessageForTimestamps(messages)
+		if isStories {
+			receiptContent = signalmeow.ViewedReceiptMessageForTimestamps(messages)
+		}
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		result := s.Client.SendMessage(ctx, libsignalgo.NewACIServiceID(destination), signalmeow.ReadReceptMessageForTimestamps(messages))
+		result := s.Client.SendMessage(ctx, libsignalgo.NewACIServiceID(destination), receiptContent)
 		cancel()
 		if !result.WasSuccessful {
 			zerolog.Ctx(ctx).Err(result.Error).

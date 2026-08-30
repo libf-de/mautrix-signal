@@ -490,6 +490,31 @@ func ReadReceptMessageForTimestamps(timestamps []uint64) *signalpb.Content {
 	}
 }
 
+// ViewedReceiptMessageForTimestamps builds a viewed receipt. Signal uses these (rather than read
+// receipts) to mark stories as seen, which is what makes a story gain a view.
+func ViewedReceiptMessageForTimestamps(timestamps []uint64) *signalpb.Content {
+	return &signalpb.Content{
+		Content: &signalpb.Content_ReceiptMessage{
+			ReceiptMessage: &signalpb.ReceiptMessage{
+				Timestamp: timestamps,
+				Type:      signalpb.ReceiptMessage_VIEWED.Enum(),
+			},
+		},
+	}
+}
+
+// SyncViewedMessage tells the user's other devices which stories/messages have been viewed.
+func SyncViewedMessage(senderACI uuid.UUID, timestamps []uint64) *signalpb.Content {
+	viewed := make([]*signalpb.SyncMessage_Viewed, len(timestamps))
+	for i, ts := range timestamps {
+		viewed[i] = &signalpb.SyncMessage_Viewed{
+			SenderAciBinary: senderACI[:],
+			Timestamp:       ptr.Ptr(ts),
+		}
+	}
+	return WrapSyncMessage(&signalpb.SyncMessage{Viewed: viewed})
+}
+
 func WrapDataMessage(dm *signalpb.DataMessage) *signalpb.Content {
 	return &signalpb.Content{
 		Content: &signalpb.Content_DataMessage{DataMessage: dm},

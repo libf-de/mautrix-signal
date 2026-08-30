@@ -38,6 +38,8 @@ type MessageMetadata struct {
 	// StoryGroupID is empty for stories sent to a distribution list.
 	StoryGroupID       string `json:"story_group_id,omitempty"`
 	StoryAllowsReplies bool   `json:"story_allows_replies,omitempty"`
+	// StoryRecipients are the ACIs the story was sent to, used to address a later delete.
+	StoryRecipients []string `json:"story_recipients,omitempty"`
 }
 
 type UserLoginMetadata struct {

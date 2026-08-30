@@ -681,7 +681,7 @@ func (cli *Client) handleDecryptedResult(
 		// StoryMessage has no timestamp of its own; the envelope timestamp is the sent timestamp.
 		handlerSuccess = cli.incomingStoryMessage(
 			ctx, content.StoryMessage, theirServiceID.UUID, envelope,
-			envelope.GetClientTimestamp(), isBlocked, false,
+			envelope.GetClientTimestamp(), nil, isBlocked, false,
 		)
 	default:
 		if rawContent.PniSignatureMessage == nil && rawContent.SenderKeyDistributionMessage == nil {
@@ -753,7 +753,7 @@ func (cli *Client) handleSyncMessage(ctx context.Context, msg *signalpb.SyncMess
 			// timestamp of the sync message itself.
 			cli.incomingStoryMessage(
 				ctx, syncSent.GetStoryMessage(), cli.Store.ACI, envelope,
-				syncSent.GetTimestamp(), false, true,
+				syncSent.GetTimestamp(), storyRecipientsFromSync(ctx, syncSent), false, true,
 			)
 		}
 		if syncSent.GetMessage() != nil || syncSent.GetEditMessage() != nil {
@@ -980,12 +980,29 @@ func (cli *Client) incomingEditMessage(
 	}), true
 }
 
+// storyRecipientsFromSync collects the ACIs a story we posted from another device was sent to, so
+// a later delete can be addressed to the same people.
+func storyRecipientsFromSync(ctx context.Context, syncSent *signalpb.SyncMessage_Sent) []string {
+	recipients := make([]string, 0, len(syncSent.GetStoryMessageRecipients()))
+	for _, recipient := range syncSent.GetStoryMessageRecipients() {
+		serviceID, err := ParseStringOrBinaryServiceID(
+			recipient.GetDestinationServiceId(), recipient.GetDestinationServiceIdBinary())
+		if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to parse story sync recipient")
+			continue
+		}
+		recipients = append(recipients, serviceID.String())
+	}
+	return recipients
+}
+
 func (cli *Client) incomingStoryMessage(
 	ctx context.Context,
 	storyMessage *signalpb.StoryMessage,
 	messageSenderACI uuid.UUID,
 	envelope *signalpb.Envelope,
 	storyTimestamp uint64,
+	storyRecipients []string,
 	isBlocked bool,
 	isSync bool,
 ) (handlerSuccess bool) {
@@ -1040,6 +1057,7 @@ func (cli *Client) incomingStoryMessage(
 			IsStory:         true,
 			StoryGroupID:    groupID,
 			StoryTimestamp:  storyTimestamp,
+			StoryRecipients: storyRecipients,
 		},
 		Event: storyMessage,
 	})

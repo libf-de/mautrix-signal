@@ -398,8 +398,9 @@ func (evt *Bv2ChatEvent) convertStory(
 	storyMsg *signalpb.StoryMessage,
 ) *bridgev2.ConvertedMessage {
 	info := msgconv.StoryInfo{
-		Timestamp: evt.Info.StoryTimestamp,
-		GroupID:   string(evt.Info.StoryGroupID),
+		Timestamp:  evt.Info.StoryTimestamp,
+		GroupID:    string(evt.Info.StoryGroupID),
+		Recipients: evt.Info.StoryRecipients,
 	}
 	if evt.Info.StoryGroupID != "" {
 		group, _, err := evt.s.Client.RetrieveGroupByID(ctx, evt.Info.StoryGroupID, 0)
@@ -483,6 +484,9 @@ func (b *Bv2Receipt) GetType() bridgev2.RemoteEventType {
 		return bridgev2.RemoteEventReadReceipt
 	case signalpb.ReceiptMessage_DELIVERY:
 		return bridgev2.RemoteEventDeliveryReceipt
+	case signalpb.ReceiptMessage_VIEWED:
+		// Stories (and view-once media) are marked seen with viewed receipts instead of read ones.
+		return bridgev2.RemoteEventReadReceipt
 	default:
 		return bridgev2.RemoteEventUnknown
 	}

@@ -44,6 +44,8 @@ type StoryInfo struct {
 	GroupID string
 	// GroupName is used to label group stories. Empty if unknown or not a group story.
 	GroupName string
+	// Recipients are the ACIs the story went to, if known (only for our own stories).
+	Recipients []string
 }
 
 // argbToCSS converts Signal's integer hex colors (0xAARRGGBB) to a CSS color string.
@@ -111,6 +113,7 @@ func (mc *MessageConverter) StoryToMatrix(
 		StorySentTimestamp:  info.Timestamp,
 		StoryGroupID:        info.GroupID,
 		StoryAllowsReplies:  story.GetAllowsReplies(),
+		StoryRecipients:     info.Recipients,
 	}
 	for i, part := range cm.Parts {
 		part.ID = signalid.MakeMessagePartID(i)

@@ -215,11 +215,14 @@ func init() {
 	signalCapsStories.Edit = event.CapLevelUnsupported
 	signalCapsStories.EditMaxCount = 0
 	signalCapsStories.EditMaxAge = nil
-	signalCapsStories.Delete = event.CapLevelUnsupported
+	// Deleting your own story is supported; it sends a delete-for-everyone to the recipients.
+	signalCapsStories.Delete = event.CapLevelFullySupported
 	signalCapsStories.DeleteMaxAge = nil
 	signalCapsStories.DisappearingTimer = nil
 	signalCapsStories.TypingNotifications = false
-	signalCapsStories.ReadReceipts = false
+	// Read receipts in the stories room are sent to Signal as viewed receipts, which is what
+	// makes a story gain a view.
+	signalCapsStories.ReadReceipts = true
 	signalCapsStories.DeleteChat = false
 	signalCapsStories.MessageRequest = nil
 	signalCapsStories.Poll = event.CapLevelUnsupported

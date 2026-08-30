@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -165,6 +166,7 @@ func (s *SignalClient) postStory(ctx context.Context, msg *bridgev2.MatrixMessag
 				StoryAuthor:         s.Client.Store.ACI.String(),
 				StorySentTimestamp:  ts,
 				StoryAllowsReplies:  story.GetAllowsReplies(),
+				StoryRecipients:     serviceIDsToStrings(recipients),
 			},
 		},
 		RemovePending: networkid.TransactionID(msgID),
@@ -203,4 +205,92 @@ func (s *SignalClient) sendStoryReaction(
 			TargetSentTimestamp:   proto.Uint64(targetSentTimestamp),
 		},
 	}))
+}
+
+func serviceIDsToStrings(serviceIDs []libsignalgo.ServiceID) []string {
+	out := make([]string, len(serviceIDs))
+	for i, serviceID := range serviceIDs {
+		out[i] = serviceID.String()
+	}
+	return out
+}
+
+// storyDeleteRecipients works out who to tell about a deleted story: the recorded recipients if we
+// have them, otherwise a fresh resolve of My Story.
+func (s *SignalClient) storyDeleteRecipients(ctx context.Context, meta *signalid.MessageMetadata) ([]libsignalgo.ServiceID, error) {
+	if len(meta.StoryRecipients) > 0 {
+		recipients := make([]libsignalgo.ServiceID, 0, len(meta.StoryRecipients))
+		for _, raw := range meta.StoryRecipients {
+			serviceID, err := libsignalgo.ServiceIDFromString(raw)
+			if err != nil {
+				zerolog.Ctx(ctx).Warn().Err(err).Str("raw_service_id", raw).
+					Msg("Failed to parse stored story recipient")
+				continue
+			}
+			recipients = append(recipients, serviceID)
+		}
+		if len(recipients) > 0 {
+			return recipients, nil
+		}
+	}
+	return s.Client.ResolveStoryRecipients(ctx, signalmeow.MyStoryID)
+}
+
+// deleteStory removes a story we posted. Signal does this by sending a normal delete-for-everyone
+// data message to each story recipient individually with story=true, rather than as a
+// multi-recipient send (see sendDeleteStoryForEveryone in Signal Desktop).
+func (s *SignalClient) deleteStory(ctx context.Context, target *database.Message, ts uint64) error {
+	meta, err := storyMetadata(target)
+	if err != nil {
+		return err
+	}
+	_, targetSentTimestamp, err := signalid.ParseMessageID(target.ID)
+	if err != nil {
+		return fmt.Errorf("failed to parse target message ID: %w", err)
+	}
+	if meta.StoryGroupID != "" {
+		_, err = s.Client.SendGroupMessage(ctx, types.GroupIdentifier(meta.StoryGroupID),
+			signalmeow.WrapDataMessage(storyDeleteMessage(s.Client.Store.ACI, targetSentTimestamp, ts)))
+		return err
+	}
+	recipients, err := s.storyDeleteRecipients(ctx, meta)
+	if err != nil {
+		return fmt.Errorf("failed to resolve story delete recipients: %w", err)
+	} else if len(recipients) == 0 {
+		return fmt.Errorf("no recipients to send story deletion to")
+	}
+	log := zerolog.Ctx(ctx)
+	var lastErr error
+	var successes int
+	for _, recipient := range recipients {
+		if recipient.Type == libsignalgo.ServiceIDTypeACI && recipient.UUID == s.Client.Store.ACI {
+			continue
+		}
+		res := s.Client.SendMessage(ctx, recipient,
+			signalmeow.WrapDataMessage(storyDeleteMessage(s.Client.Store.ACI, targetSentTimestamp, ts)))
+		if !res.WasSuccessful {
+			lastErr = res.Error
+			log.Warn().Err(res.Error).Stringer("recipient", recipient).
+				Msg("Failed to send story deletion to recipient")
+		} else {
+			successes++
+		}
+	}
+	if successes == 0 && lastErr != nil {
+		return fmt.Errorf("failed to send story deletion to any recipient: %w", lastErr)
+	}
+	return nil
+}
+
+func storyDeleteMessage(ourACI uuid.UUID, targetSentTimestamp, ts uint64) *signalpb.DataMessage {
+	return &signalpb.DataMessage{
+		Timestamp: proto.Uint64(ts),
+		Delete: &signalpb.DataMessage_Delete{
+			TargetSentTimestamp: proto.Uint64(targetSentTimestamp),
+		},
+		StoryContext: &signalpb.DataMessage_StoryContext{
+			AuthorAciBinary: ourACI[:],
+			SentTimestamp:   proto.Uint64(targetSentTimestamp),
+		},
+	}
 }
