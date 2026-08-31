@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -170,6 +171,13 @@ func (mc *MessageConverter) convertFileToSignal(ctx context.Context, evt *event.
 		}
 		mime = "audio/aac"
 		fileName += ".aac"
+	} else if mime == "video/quicktime" {
+		data, err = convertQuicktimeToMP4(ctx, data)
+		if err != nil {
+			return nil, err
+		}
+		mime = "video/mp4"
+		fileName = strings.TrimSuffix(fileName, path.Ext(fileName)) + ".mp4"
 	} else if evt.Type == event.EventSticker {
 		switch mime {
 		case "image/webp", "image/png", "image/apng":
@@ -209,6 +217,28 @@ func (mc *MessageConverter) convertFileToSignal(ctx context.Context, evt *event.
 		att.BlurHash = proto.String(content.Info.AnoaBlurhash)
 	}
 	return att, nil
+}
+
+// convertQuicktimeToMP4 rewraps a .mov into an .mp4 container, which is what Signal clients expect.
+// The streams are usually already h264/aac, so try a remux first and only re-encode if that fails.
+func convertQuicktimeToMP4(ctx context.Context, data []byte) ([]byte, error) {
+	if !ffmpeg.Supported() {
+		return nil, fmt.Errorf("%w: converting quicktime videos requires ffmpeg", bridgev2.ErrMediaConvertFailed)
+	}
+	converted, err := ffmpeg.ConvertBytes(ctx, data, ".mp4", []string{}, []string{
+		"-c", "copy", "-movflags", "+faststart",
+	}, "video/quicktime")
+	if err == nil {
+		return converted, nil
+	}
+	zerolog.Ctx(ctx).Debug().Err(err).Msg("Failed to remux quicktime video to mp4, re-encoding instead")
+	converted, err = ffmpeg.ConvertBytes(ctx, data, ".mp4", []string{}, []string{
+		"-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart",
+	}, "video/quicktime")
+	if err != nil {
+		return nil, fmt.Errorf("%w (quicktime to mp4): %w", bridgev2.ErrMediaConvertFailed, err)
+	}
+	return converted, nil
 }
 
 func parseGeoURI(uri string) (lat, long string, err error) {

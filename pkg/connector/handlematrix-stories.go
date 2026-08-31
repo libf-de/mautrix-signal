@@ -39,7 +39,7 @@ import (
 var (
 	ErrStorySendDisabled = errors.New("sending stories is disabled in the bridge config")
 	ErrNotAStory         = errors.New("target message is not a story")
-	ErrStoryNoReplies    = errors.New("this story doesn't allow replies")
+	ErrStoryNoReplies    = errors.New("this story doesn't allow replies or reactions")
 	ErrOwnStory          = errors.New("can't reply to or react to your own story")
 )
 
@@ -185,6 +185,10 @@ func (s *SignalClient) sendStoryReaction(
 	meta, err := storyMetadata(target)
 	if err != nil {
 		return err
+	} else if !meta.StoryAllowsReplies {
+		// The recipient's client silently drops reactions to stories that don't allow replies
+		// (see findStoryMessage in Signal Desktop), so fail loudly rather than pretend it worked.
+		return ErrStoryNoReplies
 	}
 	storyContext, err := storyContextFor(meta)
 	if err != nil {

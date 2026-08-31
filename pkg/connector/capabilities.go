@@ -40,7 +40,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.signal.capabilities.2026_08_29"
+	base := "fi.mau.signal.capabilities.2026_08_31"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -92,6 +92,8 @@ var signalCaps = &event.RoomFeatures{
 				"video/mp4":  event.CapLevelFullySupported,
 				"video/ogg":  event.CapLevelFullySupported,
 				"video/webm": event.CapLevelFullySupported,
+				// Signal clients don't play quicktime, so it's converted to mp4 before sending
+				"video/quicktime": supportedIfFFmpeg(),
 			},
 			MaxSize:          MaxFileSize,
 			Caption:          event.CapLevelFullySupported,
@@ -273,5 +275,5 @@ func (s *SignalConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities
 }
 
 func (s *SignalConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 12
+	return 1, 13
 }
